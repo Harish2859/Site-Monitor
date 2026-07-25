@@ -3,20 +3,24 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Website Uptime & Performance Monitoring API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: monitors
+    description: Monitor management
+  - name: alerts
+    description: Alert management
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
+      description: Returns server health status including DB connectivity
       responses:
         "200":
           description: Healthy
@@ -24,6 +28,136 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /monitors:
+    get:
+      operationId: listMonitors
+      tags: [monitors]
+      summary: List all monitors
+      description: Returns all monitors with latest status, response time, and uptime percentage
+      responses:
+        "200":
+          description: List of monitors with current status
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonitorWithStatus"
+    post:
+      operationId: createMonitor
+      tags: [monitors]
+      summary: Add a new monitor
+      description: Validates URL format, runs SSRF check, enforces interval_seconds >= 30
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitorInput"
+      responses:
+        "201":
+          description: Monitor created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Monitor"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /monitors/{id}:
+    delete:
+      operationId: deleteMonitor
+      tags: [monitors]
+      summary: Delete a monitor
+      description: Removes monitor and cascades to logs and alerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /monitor-logs:
+    get:
+      operationId: listMonitorLogs
+      tags: [monitors]
+      summary: Get paginated historical logs for a monitor
+      parameters:
+        - name: monitorId
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+        - name: before
+          in: query
+          schema:
+            type: ["string", "null"]
+            description: ISO timestamp cursor for pagination
+      responses:
+        "200":
+          description: Paginated monitor logs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsResponse"
+        "404":
+          description: Monitor not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /alerts:
+    get:
+      operationId: listAlerts
+      tags: [alerts]
+      summary: List alerts
+      description: Returns paginated alerts, filterable by resolved status
+      parameters:
+        - name: resolved
+          in: query
+          schema:
+            type: ["boolean", "null"]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: monitorId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Alert"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +165,128 @@ components:
       properties:
         status:
           type: string
+        db:
+          type: string
       required:
         - status
+        - db
 
+    Monitor:
+      type: object
+      required: [id, url, intervalSeconds, isActive, createdAt]
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        name:
+          type: ["string", "null"]
+        intervalSeconds:
+          type: integer
+        isActive:
+          type: boolean
+        sslExpiryDate:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    MonitorWithStatus:
+      type: object
+      required: [id, url, intervalSeconds, isActive, createdAt, currentStatus, lastResponseTimeMs, uptimePercent]
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        name:
+          type: ["string", "null"]
+        intervalSeconds:
+          type: integer
+        isActive:
+          type: boolean
+        sslExpiryDate:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        currentStatus:
+          type: ["string", "null"]
+        lastResponseTimeMs:
+          type: ["integer", "null"]
+        lastCheckedAt:
+          type: ["string", "null"]
+        uptimePercent:
+          type: ["number", "null"]
+
+    MonitorInput:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          minLength: 1
+        name:
+          type: string
+        intervalSeconds:
+          type: integer
+          default: 60
+          minimum: 30
+
+    MonitorLog:
+      type: object
+      required: [id, monitorId, checkedAt]
+      properties:
+        id:
+          type: integer
+        monitorId:
+          type: integer
+        statusCode:
+          type: ["integer", "null"]
+        responseTimeMs:
+          type: ["integer", "null"]
+        status:
+          type: ["string", "null"]
+        errorMessage:
+          type: ["string", "null"]
+        checkedAt:
+          type: string
+
+    MetricsResponse:
+      type: object
+      required: [logs, hasMore]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitorLog"
+        hasMore:
+          type: boolean
+
+    Alert:
+      type: object
+      required: [id, monitorId, eventType, resolved, triggeredAt]
+      properties:
+        id:
+          type: integer
+        monitorId:
+          type: integer
+        eventType:
+          type: string
+        message:
+          type: ["string", "null"]
+        resolved:
+          type: boolean
+        triggeredAt:
+          type: string
+        resolvedAt:
+          type: ["string", "null"]
+        monitorUrl:
+          type: ["string", "null"]
+        monitorName:
+          type: ["string", "null"]
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

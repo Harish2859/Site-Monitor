@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Uptime Dashboard"
+version = "1.0.0"
+id = "artifacts/uptime-dashboard"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22839
+
+[services.development]
+run = "pnpm --filter @workspace/uptime-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/uptime-dashboard", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/uptime-dashboard/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22839"
+BASE_PATH = "/"

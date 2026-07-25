@@ -1,0 +1,48 @@
+Build a production-grade full-stack Website Uptime & Performance Monitoring application. Follow every requirement below precisely — do not simplify or substitute easier alternatives for the concurrency, real-time, or security requirements.
+
+TECH STACK:
+- Frontend: React with Tailwind CSS, dark-mode dashboard UI (Datadog/Vercel-style).
+- Backend: Node.js with Express.
+- Database: PostgreSQL using the 'pg' package with a connection pool (max 10 connections).
+- Real-time: WebSockets (ws or socket.io) — this is MANDATORY, not optional. Do not implement frontend polling as a substitute.
+
+DATABASE SCHEMA (create automatically on startup if tables don't exist):
+- monitors: id, url (UNIQUE), name, interval_seconds (default 60, enforce minimum 30 at both DB CHECK constraint and application layer), is_active, ssl_expiry_date, created_at.
+- monitor_logs: id, monitor_id (FK, ON DELETE CASCADE), status_code, response_time_ms, status ('UP'/'DOWN'), error_message, checked_at. Add an index on (monitor_id, checked_at DESC).
+- alerts: id, monitor_id (FK), event_type ('DOWN'/'RECOVERED'/'HIGH_LATENCY'), message, resolved, triggered_at, resolved_at.
+
+BACKGROUND POLLING ENGINE (this is the core of the app — implement carefully):
+1. A scheduler loop checks every few seconds which monitors are "due" (based on their individual interval_seconds and last check time) — do NOT use one setInterval per monitor; use a single central scheduler tick.
+2. Due checks must be dispatched CONCURRENTLY, not in a sequential for-loop with await. Use Promise.allSettled() across all due monitors in a tick, with a concurrency cap (e.g. a semaphore or p-limit library limiting to ~20 simultaneous outbound requests) so it doesn't fire unlimited parallel requests.
+3. Overlap protection: track which monitors currently have a check in-flight (e.g. an in-memory Set of monitor IDs) and skip a monitor's tick if its previous check hasn't resolved yet.
+4. Each check: use axios or fetch with an explicit 10-second timeout, measure response time in milliseconds with high-resolution timing (process.hrtime or performance.now), capture the HTTP status code, and catch network errors / timeouts as DOWN with the error message stored.
+5. SSRF PROTECTION (required): before fetching any user-submitted URL, resolve its hostname and reject/block requests targeting private or reserved IP ranges (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, and localhost). Validate the URL is http/https only.
+6. Insert every check result into monitor_logs.
+7. Anomaly detection rules (implement exactly):
+   - Non-2xx status code or request failure → status 'DOWN', insert a 'DOWN' alert if the monitor's previous status was 'UP' (transition-based, not repeated on every tick).
+   - When a DOWN monitor returns to 'UP' → insert a 'RECOVERED' alert and mark the related DOWN alert as resolved (set resolved = true, resolved_at = NOW()).
+   - HIGH_LATENCY: compute a rolling average of the monitor's last 10 response times; if the current response time exceeds 2x that rolling average AND exceeds an absolute floor of 1000ms, insert a HIGH_LATENCY alert.
+8. Broadcast every check result and alert event over WebSocket to all connected clients immediately after it's written to the database.
+
+API ENDPOINTS:
+- GET /api/monitors — list all monitors with their latest status, response time, and uptime percentage (calculated from recent logs).
+- POST /api/monitors — add a new monitor. Validate URL format and run the SSRF check before saving. Enforce interval_seconds >= 30.
+- DELETE /api/monitors/:id — remove a monitor (cascades to logs/alerts).
+- GET /api/monitors/:id/metrics?limit=100&before=<timestamp> — paginated historical logs for charting. Never return unbounded results.
+- GET /api/alerts?resolved=false&limit=50 — paginated alerts, filterable by resolved status.
+- GET /health — basic health check endpoint returning DB connectivity status.
+
+FRONTEND (React + Tailwind):
+- Summary cards: total monitors, healthy count, down count, average response time across all monitors.
+- Live grid: all monitors with status badges (green UP / red DOWN), current response time, uptime %. Updates must arrive via WebSocket, not manual refresh or polling.
+- Add-monitor form/modal: URL, optional name, interval selector (min 30s).
+- Detail view per monitor: recent status history table + a response-time sparkline/chart (last 100 checks) using paginated data from the metrics endpoint.
+- Alerts panel: recent alerts list, with resolved/unresolved distinction.
+- Batch WebSocket UI updates so the frontend does not re-render on every single message if many arrive close together (e.g. debounce/batch updates every 200-300ms for the log stream, but status changes and alerts can update immediately).
+
+OPERATIONAL REQUIREMENTS:
+- All DB credentials via environment variables (.env), never hardcoded.
+- Graceful shutdown: stop the polling scheduler and close DB pool cleanly on SIGTERM/SIGINT.
+- Basic error handling and logging on all API routes and the polling loop (don't let one failed check crash the scheduler).
+
+Do not take shortcuts on the concurrency, WebSocket, or SSRF requirements even if a simpler implementation would technically satisfy the feature list — these are the intentional engineering challenges of this project.

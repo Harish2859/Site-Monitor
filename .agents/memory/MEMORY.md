@@ -1,0 +1,3 @@
+- [Orval path+query param collision](orval-param-collision.md) — endpoints with both path params AND query params cause TS2308; use query-only params to avoid it
+- [Drizzle dynamic WHERE with raw pool](drizzle-raw-pool.md) — dynamic WHERE clauses with conditions array must use pool.query(), not db.execute(sql template)
+- [WS path in artifact.toml](ws-artifact-toml.md) — /ws must be listed in the API server artifact.toml paths array or the proxy silently drops WebSocket upgrades
