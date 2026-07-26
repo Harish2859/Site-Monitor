@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
-import { db } from "@workspace/db";
-import { monitorsTable, monitorLogsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { db, pool } from "@workspace/db";
+import { monitorsTable } from "@workspace/db";
 import {
   CreateMonitorBody,
   DeleteMonitorParams,
@@ -22,36 +22,39 @@ router.get("/monitors", async (req, res): Promise<void> => {
 
   const monitorIds = monitors.map((m) => m.id);
 
-  // Latest log per monitor
-  const latestLogs = await db.execute<{
+  // Latest log per monitor (pool.query — pg driver serialises JS array correctly for ANY($1::int[]))
+  const latestLogs = await pool.query<{
     monitor_id: number;
     status: string | null;
     response_time_ms: number | null;
     checked_at: Date | null;
-  }>(sql`
-    SELECT DISTINCT ON (monitor_id) monitor_id, status, response_time_ms, checked_at
-    FROM monitor_logs
-    WHERE monitor_id = ANY(${monitorIds}::int[])
-    ORDER BY monitor_id, checked_at DESC
-  `);
+  }>(
+    `SELECT DISTINCT ON (monitor_id) monitor_id, status, response_time_ms, checked_at
+     FROM monitor_logs
+     WHERE monitor_id = ANY($1::int[])
+     ORDER BY monitor_id, checked_at DESC`,
+    [monitorIds],
+  );
 
   // Uptime % from last 100 logs per monitor
-  const uptimeRows = await db.execute<{
+  const uptimeRows = await pool.query<{
     monitor_id: number;
     up_count: string;
     total_count: string;
-  }>(sql`
-    SELECT monitor_id, 
-           COUNT(*) FILTER (WHERE status = 'UP') as up_count,
-           COUNT(*) as total_count
-    FROM (
-      SELECT monitor_id, status, ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY checked_at DESC) as rn
-      FROM monitor_logs
-      WHERE monitor_id = ANY(${monitorIds}::int[])
-    ) sub
-    WHERE rn <= 100
-    GROUP BY monitor_id
-  `);
+  }>(
+    `SELECT monitor_id,
+            COUNT(*) FILTER (WHERE status = 'UP') AS up_count,
+            COUNT(*) AS total_count
+     FROM (
+       SELECT monitor_id, status,
+              ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY checked_at DESC) AS rn
+       FROM monitor_logs
+       WHERE monitor_id = ANY($1::int[])
+     ) sub
+     WHERE rn <= 100
+     GROUP BY monitor_id`,
+    [monitorIds],
+  );
 
   const latestMap = new Map(latestLogs.rows.map((r) => [r.monitor_id, r]));
   const uptimeMap = new Map(uptimeRows.rows.map((r) => [r.monitor_id, r]));
